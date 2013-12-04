@@ -4,3 +4,8 @@
 *.jar
 *.war
 *.ear
+/bin
+/generated
+/bin/
+/generated/
+/bin_test
