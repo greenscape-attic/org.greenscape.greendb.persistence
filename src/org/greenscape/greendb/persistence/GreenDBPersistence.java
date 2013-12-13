@@ -4,8 +4,6 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-import javax.persistence.Entity;
-
 import org.greenscape.greendb.Connection;
 import org.greenscape.persistence.DocumentModel;
 import org.greenscape.persistence.DocumentModelBase;
@@ -13,6 +11,7 @@ import org.greenscape.persistence.PersistedModelBase;
 import org.greenscape.persistence.PersistenceProvider;
 import org.greenscape.persistence.PersistenceService;
 import org.greenscape.persistence.PersistenceType;
+import org.greenscape.persistence.annotations.Model;
 import org.greenscape.persistence.util.PersistenceFactoryUtil;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Reference;
@@ -145,7 +144,7 @@ public class GreenDBPersistence implements PersistenceService {
 	@Override
 	public <T> Collection<T> executeQuery(Class<T> clazz, String query) {
 		List<T> modelList = new ArrayList<>();
-		if (docbase.existsCluster(clazz.getAnnotation(Entity.class).name().toLowerCase())) {
+		if (docbase.existsCluster(clazz.getAnnotation(Model.class).name().toLowerCase())) {
 			List<ODocument> list = docbase.query(new OSQLSynchQuery<>(query));
 			if (list != null && list.size() > 0) {
 				for (ODocument doc : list) {
@@ -186,10 +185,10 @@ public class GreenDBPersistence implements PersistenceService {
 	@SuppressWarnings("unchecked")
 	@Override
 	public <T> List<T> findByProperty(Class<T> clazz, String propertyName, Object value) {
-		if (!clazz.isAnnotationPresent(Entity.class)) {
-			throw new RuntimeException("No Entity annotation found on class " + clazz.getCanonicalName());
+		if (!clazz.isAnnotationPresent(Model.class)) {
+			throw new RuntimeException("No Model annotation found on class " + clazz.getCanonicalName());
 		}
-		String modelName = clazz.getAnnotation(Entity.class).name();
+		String modelName = clazz.getAnnotation(Model.class).name();
 		if (modelName == null) {
 			modelName = clazz.getSimpleName();
 		}
@@ -248,10 +247,10 @@ public class GreenDBPersistence implements PersistenceService {
 		if (object == null) {
 			return null;
 		}
-		if (!object.getClass().isAnnotationPresent(Entity.class)) {
-			throw new RuntimeException("No Entity annotation found on class " + object.getClass().getCanonicalName());
+		if (!object.getClass().isAnnotationPresent(Model.class)) {
+			throw new RuntimeException("No Model annotation found on class " + object.getClass().getCanonicalName());
 		}
-		String modelName = object.getClass().getAnnotation(Entity.class).name();
+		String modelName = object.getClass().getAnnotation(Model.class).name();
 		if (modelName == null) {
 			modelName = object.getClass().getSimpleName();
 		}

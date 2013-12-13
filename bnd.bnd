@@ -7,8 +7,8 @@
 	com.orientechnologies.orientdb-core,\
 	org.greenscape.persistence.util;version=latest,\
 	org.greenscape.persistence.impl;version=latest,\
-	javax.persistence,\
 	com.orientechnologies.orient-commons
 -dsannotations: *
-Bundle-Version: 0.1.0
+Bundle-Version: 0.2.0
 Private-Package: org.greenscape.greendb.persistence
+-sources: false
