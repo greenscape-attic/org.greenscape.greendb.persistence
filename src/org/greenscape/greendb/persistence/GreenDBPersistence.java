@@ -3,23 +3,41 @@ package org.greenscape.greendb.persistence;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+import javax.management.Query;
 
 import org.greenscape.greendb.Connection;
 import org.greenscape.persistence.DocumentModel;
 import org.greenscape.persistence.DocumentModelBase;
+import org.greenscape.persistence.ModelRegistryEntry;
 import org.greenscape.persistence.PersistedModelBase;
 import org.greenscape.persistence.PersistenceProvider;
 import org.greenscape.persistence.PersistenceService;
 import org.greenscape.persistence.PersistenceType;
+import org.greenscape.persistence.TypedQuery;
 import org.greenscape.persistence.annotations.Model;
+import org.greenscape.persistence.criteria.CriteriaBuilder;
+import org.greenscape.persistence.criteria.CriteriaDelete;
+import org.greenscape.persistence.criteria.CriteriaQuery;
+import org.greenscape.persistence.criteria.CriteriaUpdate;
 import org.greenscape.persistence.util.PersistenceFactoryUtil;
+import org.osgi.framework.BundleContext;
+import org.osgi.service.component.ComponentContext;
+import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
 import org.osgi.service.component.annotations.Reference;
+import org.osgi.service.component.annotations.ReferenceCardinality;
+import org.osgi.service.component.annotations.ReferencePolicy;
+import org.osgi.service.log.LogService;
 
 import com.orientechnologies.orient.core.db.ODatabaseRecordThreadLocal;
 import com.orientechnologies.orient.core.db.document.ODatabaseDocument;
 import com.orientechnologies.orient.core.id.ORecordId;
+import com.orientechnologies.orient.core.iterator.ORecordIteratorClass;
 import com.orientechnologies.orient.core.record.impl.ODocument;
+import com.orientechnologies.orient.core.sql.OCommandSQL;
 import com.orientechnologies.orient.core.sql.query.OSQLSynchQuery;
 
 /**
@@ -27,15 +45,20 @@ import com.orientechnologies.orient.core.sql.query.OSQLSynchQuery;
  * @author Sheikh Sajid
  * 
  */
-@Component
+@Component(property = { "dbName=" + GreenDBPersistence.PROVIDER_NAME })
 public class GreenDBPersistence implements PersistenceService {
 
-	private static final String PROVIDER_NAME = "GreenDB";
+	static final String PROVIDER_NAME = "GreenDB";
 	private static final PersistenceProvider provider;
+	private static final String GREENDB_ID_FIELD = "id";
+
+	private BundleContext context;
+	private LogService logService;
 
 	private Connection connection;
-
 	private ODatabaseDocument docbase;
+
+	private final List<ModelRegistryEntry> modelRegistryEntries = new ArrayList<>();
 
 	static {
 		provider = PersistenceFactoryUtil.createPersistenceProvider(PROVIDER_NAME, PersistenceType.DOCUMENT);
@@ -51,7 +74,7 @@ public class GreenDBPersistence implements PersistenceService {
 		return provider.getType();
 	}
 
-	@Reference
+	@Reference(policy = ReferencePolicy.DYNAMIC)
 	public void setConnection(Connection connection) {
 		this.connection = connection;
 		this.docbase = this.connection.getDatabaseDocument();
@@ -63,6 +86,15 @@ public class GreenDBPersistence implements PersistenceService {
 			this.docbase.close();
 		}
 		this.docbase = null;
+	}
+
+	@Reference(cardinality = ReferenceCardinality.OPTIONAL, policy = ReferencePolicy.DYNAMIC)
+	public void setLogService(LogService logService) {
+		this.logService = logService;
+	}
+
+	public void unsetLogService(LogService logService) {
+		this.logService = null;
 	}
 
 	@Override
@@ -124,18 +156,22 @@ public class GreenDBPersistence implements PersistenceService {
 	public Object executeQuery(String query) {
 		List<ODocument> list = docbase.query(new OSQLSynchQuery<>(query));
 		List<DocumentModelBase> modelList = new ArrayList<>();
-		if (list != null && !list.isEmpty()) {
-			for (ODocument doc : list) {
-				if (doc.getClassName() == null) {
-					DocumentModelBase model = new DocumentModelBase();
-					copy(model, doc);
-					modelList.add(model);
-				} else {
-					PersistedModelBase model = new PersistedModelBase();
-					copy(model, doc);
-					modelList.add(model);
+		try {
+			if (list != null && !list.isEmpty()) {
+				for (ODocument doc : list) {
+					if (doc.getClassName() == null) {
+						DocumentModelBase model = new DocumentModelBase();
+						copy(model, doc);
+						modelList.add(model);
+					} else {
+						PersistedModelBase model = new PersistedModelBase();
+						copy(model, doc);
+						modelList.add(model);
+					}
 				}
 			}
+		} catch (ClassNotFoundException | InstantiationException | IllegalAccessException e) {
+			throw new RuntimeException(e);
 		}
 		return modelList;
 	}
@@ -152,7 +188,29 @@ public class GreenDBPersistence implements PersistenceService {
 					try {
 						model = (DocumentModel) clazz.newInstance();
 						copy(model, doc);
-					} catch (InstantiationException | IllegalAccessException e) {
+					} catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+						throw new RuntimeException(e);
+					}
+					modelList.add((T) model);
+				}
+			}
+		}
+		return modelList;
+	}
+
+	@SuppressWarnings("unchecked")
+	public <T> List<T> executeQuery(Class<T> clazz, String query, Map<String, Object> params) {
+		List<T> modelList = new ArrayList<>();
+		if (docbase.existsCluster(clazz.getAnnotation(Model.class).name().toLowerCase())) {
+			OSQLSynchQuery<ODocument> oquery = new OSQLSynchQuery<ODocument>(query);
+			List<ODocument> list = docbase.command(oquery).execute(params);
+			if (list != null && list.size() > 0) {
+				for (ODocument doc : list) {
+					DocumentModel model = null;
+					try {
+						model = (DocumentModel) clazz.newInstance();
+						copy(model, doc);
+					} catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
 						throw new RuntimeException(e);
 					}
 					modelList.add((T) model);
@@ -168,18 +226,42 @@ public class GreenDBPersistence implements PersistenceService {
 		return null;
 	}
 
-	@SuppressWarnings("unchecked")
+	public Object executeUpdate(String query) {
+		return docbase.command(new OCommandSQL(query)).execute();
+	}
+
 	@Override
-	public <T> T findById(Class<T> clazz, Object id) {
-		ODocument doc = docbase.load((ORecordId) id);
-		DocumentModel model = null;
-		try {
-			model = (DocumentModel) clazz.newInstance();
-			copy(model, doc);
-		} catch (InstantiationException | IllegalAccessException e) {
-			throw new RuntimeException(e);
+	public <T extends DocumentModel> List<T> find(String modelName) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	@Override
+	public <T extends DocumentModel> List<T> find(Class<T> clazz) {
+		ORecordIteratorClass<ODocument> itr = docbase
+				.browseClass(clazz.getAnnotation(Model.class).name().toLowerCase());
+		List<T> list = new ArrayList<>();
+		for (ODocument doc : itr) {
+			T model = null;
+			try {
+				model = clazz.newInstance();
+				copy(model, doc);
+				list.add(model);
+			} catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+				throw new RuntimeException(e);
+			}
 		}
-		return (T) model;
+		return list;
+	}
+
+	@Override
+	public <T> T findById(Class<T> clazz, String modelId) {
+		List<T> model = findByProperty(clazz, DocumentModel.MODEL_ID, modelId);
+		if (model == null || model.size() == 0) {
+			return null;
+		} else {
+			return model.get(0);
+		}
 	}
 
 	@SuppressWarnings("unchecked")
@@ -193,11 +275,10 @@ public class GreenDBPersistence implements PersistenceService {
 			modelName = clazz.getSimpleName();
 		}
 		if (!modelExists(modelName)) {
-			// throw new RuntimeException("No model with name " + modelName +
-			// " exists");
+			throw new RuntimeException("No model with name `" + modelName + "` exists");
 		}
-		List<ODocument> result = docbase.query(new OSQLSynchQuery<>("select from " + modelName + " where "
-				+ propertyName + " = ?"), value);
+		List<ODocument> result = docbase.query(new OSQLSynchQuery<>("select from " + modelName.toLowerCase()
+				+ " where " + propertyName + " = ?"), value);
 
 		List<DocumentModel> list = new ArrayList<>();
 		DocumentModel model;
@@ -206,7 +287,7 @@ public class GreenDBPersistence implements PersistenceService {
 				model = (DocumentModel) clazz.newInstance();
 				copy(model, doc);
 				list.add(model);
-			} catch (InstantiationException | IllegalAccessException e) {
+			} catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
 				throw new RuntimeException(e);
 			}
 		}
@@ -214,15 +295,72 @@ public class GreenDBPersistence implements PersistenceService {
 	}
 
 	@Override
-	public <T> void delete(T documentModel) {
-		// TODO: gymnastics because of jackson bug, need to upgrade to 2.x
-		ORecordId id = new ORecordId((String) ((DocumentModel) documentModel).getId());
+	public <T> List<T> findByProperties(Class<T> clazz, Map<String, Object> properties) {
+		if (!clazz.isAnnotationPresent(Model.class)) {
+			throw new RuntimeException("No Model annotation found on class " + clazz.getCanonicalName());
+		}
+		String modelName = clazz.getAnnotation(Model.class).name();
+		if (modelName == null) {
+			modelName = clazz.getSimpleName();
+		}
+		String query = buildQuery(modelName, properties);
+		List<T> list = executeQuery(clazz, query, properties);
+		return list;
+	}
+
+	@Override
+	public <T extends DocumentModel> void delete(Class<T> clazz) {
+		String modelName = clazz.getAnnotation(Model.class).name();
+		executeUpdate("delete from " + modelName);
+	}
+
+	@Override
+	public <T extends DocumentModel> void delete(Class<T> clazz, String modelId) {
+		String modelName = clazz.getAnnotation(Model.class).name();
+		executeUpdate("delete from " + modelName + " where " + DocumentModel.MODEL_ID + " = '" + modelId + "'");
+	}
+
+	@Override
+	public <T extends DocumentModel> void delete(T documentModel) {
+		ORecordId id = new ORecordId(documentModel.getProperty(GREENDB_ID_FIELD).toString());
 		docbase.delete(id);
 	}
 
 	@Override
 	public boolean modelExists(String modelName) {
 		return docbase.existsCluster(modelName.toLowerCase());
+	}
+
+	@Override
+	public void addModel(String modelName) {
+		String model = modelName.toLowerCase();
+		if (!docbase.existsCluster(model)) {
+			executeUpdate("create class " + model);
+		}
+	}
+
+	@Override
+	public CriteriaBuilder getCriteriaBuilder() {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	@Override
+	public <T> TypedQuery<T> createQuery(CriteriaQuery<T> criteriaQuery) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	@Override
+	public Query createQuery(CriteriaUpdate updateQuery) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	@Override
+	public Query createQuery(CriteriaDelete deleteQuery) {
+		// TODO Auto-generated method stub
+		return null;
 	}
 
 	@Override
@@ -243,6 +381,20 @@ public class GreenDBPersistence implements PersistenceService {
 		return this;
 	}
 
+	@Activate
+	public void activate(ComponentContext ctx, Map<String, Object> config) {
+		context = ctx.getBundleContext();
+	}
+
+	@Reference(cardinality = ReferenceCardinality.MULTIPLE, policy = ReferencePolicy.DYNAMIC)
+	public void setModelRegistryEntry(ModelRegistryEntry entry) {
+		modelRegistryEntries.add(entry);
+	}
+
+	public void unsetModelRegistryEntry(ModelRegistryEntry entry) {
+		modelRegistryEntries.remove(entry);
+	}
+
 	private <T extends DocumentModel> T persistNonThreaded(T object, boolean create) {
 		if (object == null) {
 			return null;
@@ -256,27 +408,85 @@ public class GreenDBPersistence implements PersistenceService {
 		}
 		ODocument doc = null;
 		if (create) {
-			doc = new ODocument(modelName);
+			doc = new ODocument(modelName.toLowerCase());
+			object.setProperty(DocumentModel.MODEL_ID, generateModelId());
 		} else {
-			// TODO: gymnastics because of jackson bug, need to upgrade to 2.x
-			ORecordId id = new ORecordId((String) object.getId());
+			ORecordId id = new ORecordId((String) object.getProperty(GREENDB_ID_FIELD));
 			doc = docbase.load(id);
 		}
-		doc.fields(object.getProperties());
+		copy(doc, object.getProperties(), create);
 		doc.save(create);
-		object.setId(doc.getIdentity());
+		object.setProperty(GREENDB_ID_FIELD, doc.getIdentity());
 		return object;
 	}
 
 	private <T extends DocumentModel> void removeNonThreaded(T object) {
-		docbase.delete((ORecordId) object.getId());
+		docbase.delete((ORecordId) object.getProperty(GREENDB_ID_FIELD));
 	}
 
-	private void copy(DocumentModel model, ODocument doc) {
+	private void copy(DocumentModel model, ODocument doc) throws ClassNotFoundException, InstantiationException,
+	IllegalAccessException {
 		for (String field : doc.fieldNames()) {
-			model.setProperty(field, doc.field(field));
+			Object value = doc.field(field);
+			if (value instanceof ODocument) {
+				ODocument subdoc = (ODocument) value;
+				for (ModelRegistryEntry entry : modelRegistryEntries) {
+					if (entry.getModelName().toLowerCase().equals(subdoc.getClassName())) {
+						Class<?> cls = context.getBundle(entry.getBundleId()).loadClass(entry.getModelClass());
+						DocumentModel obj = (DocumentModel) cls.newInstance();
+						copy(obj, subdoc);
+						model.setProperty(field, obj);
+						break;
+					}
+				}
+			} else {
+				model.setProperty(field, value);
+			}
 		}
-		// TODO: converting to String because of jackson bug
-		model.setId(doc.getIdentity().toString());
+		model.setProperty(GREENDB_ID_FIELD, doc.getIdentity().toString());
 	}
+
+	private void copy(ODocument doc, Map<String, Object> properties, boolean create) {
+		for (String property : properties.keySet()) {
+			Object value = properties.get(property);
+			// TODO: what about null values?
+			if (value instanceof DocumentModel) {
+				DocumentModel model = (DocumentModel) value;
+				String modelName = model.getClass().getAnnotation(Model.class).name();
+				ODocument subdoc = null;
+				if (create) {
+					subdoc = new ODocument(modelName.toLowerCase());
+				} else {
+					subdoc = doc.field(property);
+				}
+				copy(subdoc, model.getProperties(), create);
+				doc.field(property, subdoc);
+			} else if (value instanceof Collection<?>) {
+			} else {
+				doc.field(property, value);
+			}
+		}
+
+	}
+
+	private String buildQuery(String modelName, Map<String, Object> properties) {
+		StringBuilder queryBuilder = new StringBuilder();
+		queryBuilder.append("select * from ").append(modelName).append(" where ");
+		for (String prop : properties.keySet()) {
+			Object values = properties.get(prop);
+			if (values instanceof Collection) {
+				queryBuilder.append(prop).append(" in (:").append(prop).append(")");
+			} else {
+				queryBuilder.append(prop).append(" = :").append(prop);
+			}
+			queryBuilder.append(" and ");
+		}
+		queryBuilder.setLength(queryBuilder.length() - 5);
+		return queryBuilder.toString();
+	}
+
+	private String generateModelId() {
+		return UUID.randomUUID().toString();
+	}
+
 }
