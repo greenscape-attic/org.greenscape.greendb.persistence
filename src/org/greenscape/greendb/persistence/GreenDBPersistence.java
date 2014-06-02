@@ -317,7 +317,8 @@ public class GreenDBPersistence implements PersistenceService {
 	@Override
 	public <T extends DocumentModel> void delete(Class<T> clazz, String modelId) {
 		String modelName = clazz.getAnnotation(Model.class).name();
-		executeUpdate("delete from " + modelName + " where " + DocumentModel.MODEL_ID + " = '" + modelId + "'");
+		executeUpdate("delete from " + modelName.toLowerCase() + " where " + DocumentModel.MODEL_ID + " = '" + modelId
+				+ "'");
 	}
 
 	@Override
@@ -416,7 +417,7 @@ public class GreenDBPersistence implements PersistenceService {
 		}
 		copy(doc, object.getProperties(), create);
 		doc.save(create);
-		object.setProperty(GREENDB_ID_FIELD, doc.getIdentity());
+		object.setProperty(GREENDB_ID_FIELD, doc.getIdentity().toString());
 		return object;
 	}
 

@@ -1,11 +1,11 @@
--buildpath: osgi.core,\
+-buildpath:  \
+	osgi.core,\
 	osgi.cmpn,\
 	junit.osgi,\
 	org.greenscape.persistence;version=latest,\
 	org.eclipse.osgi.services,\
 	org.greenscape.greendb;version=latest,\
 	com.orientechnologies.orientdb-core,\
-	org.greenscape.persistence.util;version=latest,\
 	org.greenscape.persistence.impl;version=latest,\
 	com.orientechnologies.orient-commons
 -dsannotations: *
