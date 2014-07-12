@@ -9,6 +9,6 @@
 	org.greenscape.persistence.impl;version=latest,\
 	com.orientechnologies.orient-commons
 -dsannotations: *
-Bundle-Version: 0.2.0
+Bundle-Version: 0.2.1
 Private-Package: org.greenscape.greendb.persistence
 -sources: false
