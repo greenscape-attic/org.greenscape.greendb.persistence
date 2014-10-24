@@ -8,10 +8,13 @@ import java.util.UUID;
 
 import javax.management.Query;
 
+import org.greenscape.core.ModelResource;
+import org.greenscape.core.Resource;
+import org.greenscape.core.ResourceRegistry;
+import org.greenscape.core.ResourceType;
 import org.greenscape.greendb.Connection;
 import org.greenscape.persistence.DocumentModel;
 import org.greenscape.persistence.DocumentModelBase;
-import org.greenscape.persistence.ModelRegistryEntry;
 import org.greenscape.persistence.PersistedModelBase;
 import org.greenscape.persistence.PersistenceProvider;
 import org.greenscape.persistence.PersistenceService;
@@ -41,9 +44,9 @@ import com.orientechnologies.orient.core.sql.OCommandSQL;
 import com.orientechnologies.orient.core.sql.query.OSQLSynchQuery;
 
 /**
- * 
+ *
  * @author Sheikh Sajid
- * 
+ *
  */
 @Component(property = { "dbName=" + GreenDBPersistence.PROVIDER_NAME })
 public class GreenDBPersistence implements PersistenceService {
@@ -52,13 +55,12 @@ public class GreenDBPersistence implements PersistenceService {
 	private static final PersistenceProvider provider;
 	private static final String GREENDB_ID_FIELD = "id";
 
-	private BundleContext context;
-	private LogService logService;
-
 	private Connection connection;
 	private ODatabaseDocument docbase;
+	private ResourceRegistry resourceRegistry;
 
-	private final List<ModelRegistryEntry> modelRegistryEntries = new ArrayList<>();
+	private BundleContext context;
+	private LogService logService;
 
 	static {
 		provider = PersistenceFactoryUtil.createPersistenceProvider(PROVIDER_NAME, PersistenceType.DOCUMENT);
@@ -72,6 +74,11 @@ public class GreenDBPersistence implements PersistenceService {
 	@Override
 	public PersistenceType getType() {
 		return provider.getType();
+	}
+
+	@Activate
+	void activate(ComponentContext ctx, Map<String, Object> config) {
+		context = ctx.getBundleContext();
 	}
 
 	@Reference(policy = ReferencePolicy.DYNAMIC)
@@ -88,19 +95,22 @@ public class GreenDBPersistence implements PersistenceService {
 		this.docbase = null;
 	}
 
-	@Reference(cardinality = ReferenceCardinality.OPTIONAL, policy = ReferencePolicy.DYNAMIC)
-	public void setLogService(LogService logService) {
-		this.logService = logService;
-	}
-
-	public void unsetLogService(LogService logService) {
-		this.logService = null;
+	@Override
+	public <T> void save(String modelName, T object) {
+		ODatabaseRecordThreadLocal.INSTANCE.set(docbase);
+		persistNonThreaded(modelName, (DocumentModel) object, true);
 	}
 
 	@Override
 	public <T> void save(T object) {
 		ODatabaseRecordThreadLocal.INSTANCE.set(docbase);
 		persistNonThreaded((DocumentModel) object, true);
+	}
+
+	@Override
+	public <T> void update(String modelName, T object) {
+		ODatabaseRecordThreadLocal.INSTANCE.set(docbase);
+		persistNonThreaded(modelName, (DocumentModel) object, false);
 	}
 
 	@Override
@@ -154,6 +164,7 @@ public class GreenDBPersistence implements PersistenceService {
 
 	@Override
 	public Object executeQuery(String query) {
+		logService.log(LogService.LOG_INFO, "Executing query: " + query);
 		List<ODocument> list = docbase.query(new OSQLSynchQuery<>(query));
 		List<DocumentModelBase> modelList = new ArrayList<>();
 		try {
@@ -181,6 +192,7 @@ public class GreenDBPersistence implements PersistenceService {
 	public <T> Collection<T> executeQuery(Class<T> clazz, String query) {
 		List<T> modelList = new ArrayList<>();
 		if (docbase.existsCluster(clazz.getAnnotation(Model.class).name().toLowerCase())) {
+			logService.log(LogService.LOG_INFO, "Executing query: " + query);
 			List<ODocument> list = docbase.query(new OSQLSynchQuery<>(query));
 			if (list != null && list.size() > 0) {
 				for (ODocument doc : list) {
@@ -199,9 +211,44 @@ public class GreenDBPersistence implements PersistenceService {
 	}
 
 	@SuppressWarnings("unchecked")
+	public <T extends DocumentModel> List<T> executeQuery(String modelName, String query, Map<String, Object> params) {
+		List<T> modelList = new ArrayList<>();
+		if (docbase.existsCluster(modelName.toLowerCase())) {
+			logService.log(LogService.LOG_INFO, "Executing query: " + query);
+			OSQLSynchQuery<ODocument> oquery = new OSQLSynchQuery<ODocument>(query);
+			List<ODocument> list = docbase.command(oquery).execute(params);
+			if (list != null && list.size() > 0) {
+				try {
+					ModelResource modelResource = (ModelResource) resourceRegistry.getResource(modelName);
+					Class<?> clazz = null;
+					if (modelResource.getModelClass() != null) {
+						clazz = context.getBundle(modelResource.getBundleId()).loadClass(modelResource.getModelClass());
+					}
+					T model = null;
+					for (ODocument doc : list) {
+						if (clazz == null) {
+							model = (T) new PersistedModelBase();
+						} else {
+							model = (T) clazz.newInstance();
+						}
+
+						copy(model, doc);
+
+						modelList.add(model);
+					}
+				} catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+					throw new RuntimeException(e);
+				}
+			}
+		}
+		return modelList;
+	}
+
+	@SuppressWarnings("unchecked")
 	public <T> List<T> executeQuery(Class<T> clazz, String query, Map<String, Object> params) {
 		List<T> modelList = new ArrayList<>();
 		if (docbase.existsCluster(clazz.getAnnotation(Model.class).name().toLowerCase())) {
+			logService.log(LogService.LOG_INFO, "Executing query: " + query);
 			OSQLSynchQuery<ODocument> oquery = new OSQLSynchQuery<ODocument>(query);
 			List<ODocument> list = docbase.command(oquery).execute(params);
 			if (list != null && list.size() > 0) {
@@ -230,10 +277,31 @@ public class GreenDBPersistence implements PersistenceService {
 		return docbase.command(new OCommandSQL(query)).execute();
 	}
 
+	@SuppressWarnings("unchecked")
 	@Override
 	public <T extends DocumentModel> List<T> find(String modelName) {
-		// TODO Auto-generated method stub
-		return null;
+		ORecordIteratorClass<ODocument> itr = docbase.browseClass(modelName.toLowerCase());
+		List<T> list = new ArrayList<>();
+		try {
+			ModelResource modelResource = (ModelResource) resourceRegistry.getResource(modelName);
+			Class<?> clazz = null;
+			if (modelResource.getModelClass() != null) {
+				clazz = context.getBundle(modelResource.getBundleId()).loadClass(modelResource.getModelClass());
+			}
+			for (ODocument doc : itr) {
+				T model = null;
+				if (clazz == null) {
+					model = (T) new PersistedModelBase();
+				} else {
+					model = (T) clazz.newInstance();
+				}
+				copy(model, doc);
+				list.add(model);
+			}
+		} catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+			throw new RuntimeException(e);
+		}
+		return list;
 	}
 
 	@Override
@@ -255,6 +323,16 @@ public class GreenDBPersistence implements PersistenceService {
 	}
 
 	@Override
+	public <T> T findById(String modelName, String modelId) {
+		List<T> model = findByProperty(modelName, DocumentModel.MODEL_ID, modelId);
+		if (model == null || model.size() == 0) {
+			return null;
+		} else {
+			return model.get(0);
+		}
+	}
+
+	@Override
 	public <T> T findById(Class<T> clazz, String modelId) {
 		List<T> model = findByProperty(clazz, DocumentModel.MODEL_ID, modelId);
 		if (model == null || model.size() == 0) {
@@ -262,6 +340,35 @@ public class GreenDBPersistence implements PersistenceService {
 		} else {
 			return model.get(0);
 		}
+	}
+
+	@SuppressWarnings("unchecked")
+	@Override
+	public <T> List<T> findByProperty(String modelName, String propertyName, Object value) {
+		if (!modelExists(modelName)) {
+			throw new RuntimeException("No model with name `" + modelName + "` exists");
+		}
+		String query = "select from " + modelName.toLowerCase() + " where " + propertyName + " = ?";
+		logService.log(LogService.LOG_INFO, "Executing query: " + query);
+		List<ODocument> result = docbase.query(new OSQLSynchQuery<>(query), value);
+
+		List<DocumentModel> list = new ArrayList<>();
+		try {
+			DocumentModel model;
+			ModelResource modelResource = (ModelResource) resourceRegistry.getResource(modelName);
+			Class<?> clazz = PersistedModelBase.class;
+			if (modelResource.getModelClass() != null) {
+				clazz = context.getBundle(modelResource.getBundleId()).loadClass(modelResource.getModelClass());
+			}
+			for (ODocument doc : result) {
+				model = (DocumentModel) clazz.newInstance();
+				copy(model, doc);
+				list.add(model);
+			}
+		} catch (InstantiationException | IllegalAccessException | ClassNotFoundException e) {
+			throw new RuntimeException(e);
+		}
+		return (List<T>) list;
 	}
 
 	@SuppressWarnings("unchecked")
@@ -277,8 +384,9 @@ public class GreenDBPersistence implements PersistenceService {
 		if (!modelExists(modelName)) {
 			throw new RuntimeException("No model with name `" + modelName + "` exists");
 		}
-		List<ODocument> result = docbase.query(new OSQLSynchQuery<>("select from " + modelName.toLowerCase()
-				+ " where " + propertyName + " = ?"), value);
+		String query = "select from " + modelName.toLowerCase() + " where " + propertyName + " = ?";
+		logService.log(LogService.LOG_INFO, "Executing query: " + query);
+		List<ODocument> result = docbase.query(new OSQLSynchQuery<>(query), value);
 
 		List<DocumentModel> list = new ArrayList<>();
 		DocumentModel model;
@@ -292,6 +400,13 @@ public class GreenDBPersistence implements PersistenceService {
 			}
 		}
 		return (List<T>) list;
+	}
+
+	@Override
+	public <T extends DocumentModel> List<T> findByProperties(String modelName, Map<String, Object> properties) {
+		String query = buildQuery(modelName, properties);
+		List<T> list = executeQuery(modelName, query, properties);
+		return list;
 	}
 
 	@Override
@@ -309,16 +424,26 @@ public class GreenDBPersistence implements PersistenceService {
 	}
 
 	@Override
+	public <T extends DocumentModel> void delete(String modelName) {
+		executeUpdate("delete from " + modelName);
+	}
+
+	@Override
 	public <T extends DocumentModel> void delete(Class<T> clazz) {
 		String modelName = clazz.getAnnotation(Model.class).name();
-		executeUpdate("delete from " + modelName);
+		delete(modelName);
+	}
+
+	@Override
+	public <T extends DocumentModel> void delete(String modelName, String modelId) {
+		executeUpdate("delete from " + modelName.toLowerCase() + " where " + DocumentModel.MODEL_ID + " = '" + modelId
+				+ "'");
 	}
 
 	@Override
 	public <T extends DocumentModel> void delete(Class<T> clazz, String modelId) {
 		String modelName = clazz.getAnnotation(Model.class).name();
-		executeUpdate("delete from " + modelName.toLowerCase() + " where " + DocumentModel.MODEL_ID + " = '" + modelId
-				+ "'");
+		delete(modelName, modelId);
 	}
 
 	@Override
@@ -382,18 +507,40 @@ public class GreenDBPersistence implements PersistenceService {
 		return this;
 	}
 
-	@Activate
-	public void activate(ComponentContext ctx, Map<String, Object> config) {
-		context = ctx.getBundleContext();
+	@Reference(policy = ReferencePolicy.DYNAMIC)
+	public void setResourceRegistry(ResourceRegistry resourceRegistry) {
+		this.resourceRegistry = resourceRegistry;
 	}
 
-	@Reference(cardinality = ReferenceCardinality.MULTIPLE, policy = ReferencePolicy.DYNAMIC)
-	public void setModelRegistryEntry(ModelRegistryEntry entry) {
-		modelRegistryEntries.add(entry);
+	public void unsetResourceRegistry(ResourceRegistry resourceRegistry) {
+		this.resourceRegistry = resourceRegistry;
 	}
 
-	public void unsetModelRegistryEntry(ModelRegistryEntry entry) {
-		modelRegistryEntries.remove(entry);
+	@Reference(cardinality = ReferenceCardinality.OPTIONAL, policy = ReferencePolicy.DYNAMIC)
+	public void setLogService(LogService logService) {
+		this.logService = logService;
+	}
+
+	public void unsetLogService(LogService logService) {
+		this.logService = null;
+	}
+
+	private <T extends DocumentModel> T persistNonThreaded(String modelName, T object, boolean create) {
+		if (object == null) {
+			return null;
+		}
+		ODocument doc = null;
+		if (create) {
+			doc = new ODocument(modelName.toLowerCase());
+			object.setProperty(DocumentModel.MODEL_ID, generateModelId());
+		} else {
+			ORecordId id = new ORecordId((String) object.getProperty(GREENDB_ID_FIELD));
+			doc = docbase.load(id);
+		}
+		copy(doc, object.getProperties(), create);
+		doc.save(create);
+		object.setProperty(GREENDB_ID_FIELD, doc.getIdentity().toString());
+		return object;
 	}
 
 	private <T extends DocumentModel> T persistNonThreaded(T object, boolean create) {
@@ -425,15 +572,20 @@ public class GreenDBPersistence implements PersistenceService {
 		docbase.delete((ORecordId) object.getProperty(GREENDB_ID_FIELD));
 	}
 
-	private void copy(DocumentModel model, ODocument doc) throws ClassNotFoundException, InstantiationException,
-	IllegalAccessException {
+	private <T extends DocumentModel> void copy(T model, ODocument doc) throws ClassNotFoundException,
+	InstantiationException, IllegalAccessException {
 		for (String field : doc.fieldNames()) {
 			Object value = doc.field(field);
 			if (value instanceof ODocument) {
 				ODocument subdoc = (ODocument) value;
-				for (ModelRegistryEntry entry : modelRegistryEntries) {
-					if (entry.getModelName().toLowerCase().equals(subdoc.getClassName())) {
-						Class<?> cls = context.getBundle(entry.getBundleId()).loadClass(entry.getModelClass());
+				for (Resource resource : resourceRegistry.getResources(ResourceType.Model)) {
+					ModelResource modelResource = (ModelResource) resource;
+					if (modelResource.getName().toLowerCase().equals(subdoc.getClassName())) {
+						Class<?> cls = PersistedModelBase.class;
+						if (modelResource.getModelClass() != null) {
+							cls = context.getBundle(modelResource.getBundleId()).loadClass(
+									modelResource.getModelClass());
+						}
 						DocumentModel obj = (DocumentModel) cls.newInstance();
 						copy(obj, subdoc);
 						model.setProperty(field, obj);
@@ -463,6 +615,7 @@ public class GreenDBPersistence implements PersistenceService {
 				copy(subdoc, model.getProperties(), create);
 				doc.field(property, subdoc);
 			} else if (value instanceof Collection<?>) {
+
 			} else {
 				doc.field(property, value);
 			}

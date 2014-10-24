@@ -1,13 +1,14 @@
 -buildpath:  \
-	osgi.core,\
-	osgi.cmpn,\
+	osgi.core;version=4.3,\
+	osgi.cmpn;version=4.3,\
 	junit.osgi,\
 	org.greenscape.persistence;version=latest,\
 	org.eclipse.osgi.services,\
 	org.greenscape.greendb;version=latest,\
 	com.orientechnologies.orientdb-core,\
 	org.greenscape.persistence.impl;version=latest,\
-	com.orientechnologies.orient-commons
+	com.orientechnologies.orient-commons,\
+	org.greenscape.core;version=latest
 -dsannotations: *
 Bundle-Version: 0.2.1
 Private-Package: org.greenscape.greendb.persistence
