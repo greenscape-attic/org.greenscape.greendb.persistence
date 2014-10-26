@@ -6,8 +6,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-import javax.management.Query;
-
 import org.greenscape.core.ModelResource;
 import org.greenscape.core.Resource;
 import org.greenscape.core.ResourceRegistry;
@@ -19,6 +17,7 @@ import org.greenscape.persistence.PersistedModelBase;
 import org.greenscape.persistence.PersistenceProvider;
 import org.greenscape.persistence.PersistenceService;
 import org.greenscape.persistence.PersistenceType;
+import org.greenscape.persistence.Query;
 import org.greenscape.persistence.TypedQuery;
 import org.greenscape.persistence.annotations.Model;
 import org.greenscape.persistence.criteria.CriteriaBuilder;
