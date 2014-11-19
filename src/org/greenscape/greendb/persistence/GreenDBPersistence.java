@@ -604,17 +604,16 @@ public class GreenDBPersistence implements PersistenceService {
 			// TODO: what about null values?
 			if (value instanceof DocumentModel) {
 				DocumentModel model = (DocumentModel) value;
-				String modelName = model.getClass().getAnnotation(Model.class).name();
+				// String modelName =
+				// model.getClass().getAnnotation(Model.class).name();
 				ODocument subdoc = null;
 				if (create) {
-					subdoc = new ODocument(modelName.toLowerCase());
+					subdoc = new ODocument(property.toLowerCase());
 				} else {
 					subdoc = doc.field(property);
 				}
 				copy(subdoc, model.getProperties(), create);
 				doc.field(property, subdoc);
-			} else if (value instanceof Collection<?>) {
-
 			} else {
 				doc.field(property, value);
 			}
