@@ -36,6 +36,7 @@ import org.osgi.service.log.LogService;
 
 import com.orientechnologies.orient.core.db.ODatabaseRecordThreadLocal;
 import com.orientechnologies.orient.core.db.document.ODatabaseDocument;
+import com.orientechnologies.orient.core.id.ORID;
 import com.orientechnologies.orient.core.id.ORecordId;
 import com.orientechnologies.orient.core.iterator.ORecordIteratorClass;
 import com.orientechnologies.orient.core.record.impl.ODocument;
@@ -321,8 +322,30 @@ public class GreenDBPersistence implements PersistenceService {
 		return list;
 	}
 
+	@SuppressWarnings("unchecked")
 	@Override
-	public <T> T findById(String modelName, String modelId) {
+	public <T> T find(String modelName, Object id) {
+		if (!(id instanceof ORID)) {
+			throw new RuntimeException("Invalid record id");
+		}
+		DocumentModel model = null;
+		try {
+			ODocument doc = docbase.load((ORID) id);
+			Class<?> clazz = PersistedModelBase.class;
+			ModelResource modelResource = (ModelResource) resourceRegistry.getResource(modelName);
+			if (modelResource.getModelClass() != null) {
+				clazz = context.getBundle(modelResource.getBundleId()).loadClass(modelResource.getModelClass());
+			}
+			model = (DocumentModel) clazz.newInstance();
+			copy(model, doc);
+		} catch (ClassNotFoundException | InstantiationException | IllegalAccessException e) {
+			throw new RuntimeException(e);
+		}
+		return (T) model;
+	}
+
+	@Override
+	public <T> T findByModelId(String modelName, String modelId) {
 		List<T> model = findByProperty(modelName, DocumentModel.MODEL_ID, modelId);
 		if (model == null || model.size() == 0) {
 			return null;
@@ -595,7 +618,7 @@ public class GreenDBPersistence implements PersistenceService {
 				model.setProperty(field, value);
 			}
 		}
-		model.setProperty(GREENDB_ID_FIELD, doc.getIdentity().toString());
+		model.setProperty(DocumentModel.ID, doc.getIdentity());
 	}
 
 	private void copy(ODocument doc, Map<String, Object> properties, boolean create) {
