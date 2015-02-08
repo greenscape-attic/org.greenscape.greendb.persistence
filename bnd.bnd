@@ -1,6 +1,6 @@
 -buildpath:  \
-	osgi.core;version=4.3,\
-	osgi.cmpn;version=4.3,\
+	osgi.core;version=5.0,\
+	osgi.cmpn;version=5.0,\
 	junit.osgi,\
 	org.greenscape.persistence;version=latest,\
 	org.eclipse.osgi.services,\
@@ -12,4 +12,5 @@
 -dsannotations: *
 Bundle-Version: 0.2.1
 Private-Package: org.greenscape.greendb.persistence
--sources: false
+javac.source=1.8
+javac.target=1.8
